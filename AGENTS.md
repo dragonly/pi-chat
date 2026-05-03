@@ -1,14 +1,14 @@
 # pi-chat
 
-Pi extension bridging Discord and Telegram to a sandboxed pi session via Gondolin micro-VMs.
+Pi extension bridging Discord, Telegram, and Feishu/Lark to a sandboxed pi session via Gondolin micro-VMs.
 
 ## Architecture
 
 ```
-Discord/Telegram ←→ Live Adapter ←→ Runtime (log, jobs, slices) ←→ pi agent
-                                        ↕
-                                   Gondolin VM (Alpine + bash)
-                                   /workspace  /shared
+Discord/Telegram/Feishu ←→ Live Adapter ←→ Runtime (log, jobs, slices) ←→ pi agent
+                                              ↕
+                                         Gondolin VM (Alpine + bash)
+                                         /workspace  /shared
 ```
 
 - **One VM per connection.** Started on `/chat-connect`, closed on `/chat-disconnect`. `/chat-spawn-all` launches one detached tmux/pi worker per configured channel using the `--chat-conversation <account/channel>` extension flag. `/chat-workers`, `/chat-open-all`, and `/chat-kill-all` manage those workers through tmux. Workers write status JSON to `~/.pi/agent/chat/worker-status/`; the `chat_workers` tool reads it.
@@ -44,9 +44,10 @@ Discord/Telegram ←→ Live Adapter ←→ Runtime (log, jobs, slices) ←→ p
 
 ### Live adapters
 - `src/live/types.ts` — `LiveConnection` and `LiveConnectionHandlers` interfaces.
-- `src/live/index.ts` — Adapter router (Discord vs Telegram).
+- `src/live/index.ts` — Adapter router (Discord vs Telegram vs Feishu).
 - `src/live/discord.ts` — Discord adapter: discord.js gateway, catch-up pagination, REST message sending with chunking and formatting, reply-to, auto-reconnect on disconnect.
 - `src/live/telegram.ts` — Telegram adapter: long-polling, media group debounce, initial catch-up, chunked sending with Markdown formatting.
+- `src/live/feishu.ts` — Feishu/Lark adapter: WebSocket long-connection via `@larksuiteoapi/node-sdk` for event delivery, REST send/reply/edit/delete, image/file upload + download through `/open-apis/im/v1/messages/*/resources`.
 - `src/live/common.ts` — Shared: attachment download/storage, MIME detection, bot mention detection.
 
 ### Rendering
@@ -59,6 +60,8 @@ Discord/Telegram ←→ Live Adapter ←→ Runtime (log, jobs, slices) ←→ p
 - `src/services/index.ts` — Account snapshot refresh, identity update.
 - `src/services/discord.ts` — Discord bot validation, server listing, channel/role/user discovery.
 - `src/services/telegram.ts` — Telegram bot validation, identity fetch.
+- `src/services/feishu.ts` — Feishu/Lark bot validation and chat discovery via `/open-apis/bot/v3/info` + `/open-apis/im/v1/chats`.
+- `src/services/feishu-api.ts` — Shared Feishu REST helpers: `tenant_access_token` cache, JSON + multipart calls, binary resource download.
 - `src/services/types.ts` — Shared service types.
 
 ### TUI
@@ -66,6 +69,7 @@ Discord/Telegram ←→ Live Adapter ←→ Runtime (log, jobs, slices) ←→ p
 - `src/tui/dialogs.ts` — Shared dialog helpers: select, notice, loader, toggle.
 - `src/tui/discord-setup.ts` — Guided Discord account setup (token, server selection, invite flow).
 - `src/tui/telegram-setup.ts` — Guided Telegram account setup (token, DM/group observation).
+- `src/tui/feishu-setup.ts` — Guided Feishu/Lark account setup (edition picker, App ID + App Secret, snapshot refresh).
 
 ## Storage layout
 

@@ -1,6 +1,6 @@
 # pi-chat
 
-A pi extension that bridges Discord and Telegram channels to a sandboxed pi session. Each connected channel gets its own [Gondolin](https://github.com/earendil-works/gondolin) micro-VM with persistent workspace, shared storage, memory, and skills.
+A pi extension that bridges Discord, Telegram, and Feishu/Lark channels to a sandboxed pi session. Each connected channel gets its own [Gondolin](https://github.com/earendil-works/gondolin) micro-VM with persistent workspace, shared storage, memory, and skills.
 
 ## Quick Start
 
@@ -21,14 +21,14 @@ pi -e /path/to/pi-chat
 
 - [QEMU](https://www.qemu.org/) installed (`brew install qemu` on macOS)
 - Gondolin guest image (downloaded automatically on first connect)
-- A Discord bot token or Telegram bot token
+- A Discord bot token, Telegram bot token, or Feishu/Lark app credentials (App ID + App Secret)
 - `tmux` for multi-channel worker orchestration
 
 ---
 
 ## Features
 
-- **Discord server channels** and **Telegram DMs/groups**
+- **Discord server channels**, **Telegram DMs/groups**, and **Feishu/Lark group chats**
 - **Gondolin VM sandbox** per connection — tools run inside an isolated Alpine Linux micro-VM
 - **Persistent workspace** and **shared storage** across sessions
 - **Streamed preview** responses with edit-in-place
@@ -59,6 +59,17 @@ pi -e /path/to/pi-chat
 2. Run `/chat-config` → Create account → Telegram
 3. Enter your bot token
 4. Add DMs or groups through the guided setup
+
+### Feishu / Lark
+
+1. Create a custom app in the [Feishu developer console](https://open.feishu.cn/) (or [Lark](https://open.larksuite.com/) for the international edition)
+2. Enable the **Bot** capability and subscribe to the `im.message.receive_v1` event
+3. Grant at least these scopes: `im:message`, `im:message.group_at_msg`, `im:message.p2p_msg`, `im:chat:readonly`, `im:resource`
+4. Under **Event Subscriptions**, switch delivery mode to **WebSocket (Long Connection)** so no public webhook URL is required
+5. Publish a version and wait for tenant approval (or self-approve if you are the admin)
+6. Run `/chat-config` → Create account → Feishu / Lark
+7. Pick the edition (Feishu / Lark), then paste the **App ID** and **App Secret**
+8. Invite the bot into each target chat, refresh the chat list, and configure the chats you want to bridge
 
 ---
 
