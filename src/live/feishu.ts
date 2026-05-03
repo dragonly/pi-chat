@@ -415,14 +415,12 @@ export async function connectFeishuLive(
 		loggerLevel: lark.LoggerLevel.error,
 		autoReconnect: true,
 		onError: (err) => {
+			// The SDK exhausts its internal reconnect budget before invoking this;
+			// surface a terminal error so pi-chat's outer onDisconnect flow kicks
+			// in and establishes a fresh connection. Intermediate reconnect
+			// attempts are left silent to match the Discord/Telegram adapters.
 			void handlers.onError(err instanceof Error ? err : new Error(String(err)));
 			fireDisconnect();
-		},
-		onReconnecting: () => {
-			// Surface a warning so pi-chat's status line flips; the SDK will
-			// attempt to restore the socket and fall through to onError if it
-			// ultimately fails.
-			void handlers.onError(new Error("Feishu WebSocket reconnecting..."));
 		},
 	});
 
