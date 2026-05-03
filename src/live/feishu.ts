@@ -1,10 +1,13 @@
 // Feishu (Lark) live adapter. Uses the official @larksuiteoapi/node-sdk WebSocket
 // long-connection client for event delivery, and the REST API for sending.
 //
-// Unlike Telegram long-polling, Feishu's WS stream does not replay messages that
-// arrived while the bot was offline. Catch-up is best-effort: we attempt to read
-// recent messages from the target chat via /open-apis/im/v1/messages when the
-// app is granted the im:message.group_at_msg:readonly / im:message scope.
+// Unlike Telegram long-polling, Feishu's WS stream does not replay messages
+// that arrived while the bot was offline. When a previous checkpoint is
+// available we perform a best-effort catch-up via /open-apis/im/v1/messages
+// (container_id=<chat_id>&start_time=<cursor_sec>). That endpoint requires
+// the im:message:history (or equivalent) scope and, depending on the tenant
+// policy, may only return messages that mention the bot. Missing scopes are
+// downgraded to a warning so the connection still succeeds.
 
 import * as lark from "@larksuiteoapi/node-sdk";
 
@@ -287,16 +290,138 @@ async function deleteMessage(credentials: FeishuCredentials, messageId: string, 
 	await callFeishu(credentials, "DELETE", `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`, { signal });
 }
 
+interface FeishuHistoryMessageItem {
+	message_id: string;
+	root_id?: string;
+	parent_id?: string;
+	thread_id?: string;
+	msg_type: string;
+	create_time: string;
+	update_time?: string;
+	deleted?: boolean;
+	updated?: boolean;
+	chat_id: string;
+	sender?: {
+		id: string;
+		id_type: string;
+		sender_type: string;
+		tenant_key?: string;
+	};
+	body?: { content: string };
+	mentions?: Array<{
+		key: string;
+		id: string;
+		id_type: string;
+		name: string;
+		tenant_key?: string;
+	}>;
+}
+
+function historyMessageToEvent(item: FeishuHistoryMessageItem): FeishuReceiveEvent | undefined {
+	if (!item.sender || !item.body) return undefined;
+	// Normalize the REST history payload into the same union-typed shape the WS
+	// event delivers, so eventToInput can be reused without branching.
+	const senderId: { open_id?: string; user_id?: string; union_id?: string } = {};
+	if (item.sender.id_type === "user_id") senderId.user_id = item.sender.id;
+	else if (item.sender.id_type === "union_id") senderId.union_id = item.sender.id;
+	else senderId.open_id = item.sender.id;
+	return {
+		sender: {
+			sender_id: senderId,
+			sender_type: item.sender.sender_type,
+			tenant_key: item.sender.tenant_key,
+		},
+		message: {
+			message_id: item.message_id,
+			chat_id: item.chat_id,
+			chat_type: "group",
+			message_type: item.msg_type,
+			content: item.body.content,
+			create_time: item.create_time,
+			parent_id: item.parent_id,
+			root_id: item.root_id,
+			thread_id: item.thread_id,
+			mentions: item.mentions?.map((mention) => {
+				const mentionId: { open_id?: string; user_id?: string; union_id?: string } = {};
+				if (mention.id_type === "user_id") mentionId.user_id = mention.id;
+				else if (mention.id_type === "union_id") mentionId.union_id = mention.id;
+				else mentionId.open_id = mention.id;
+				return { key: mention.key, id: mentionId, name: mention.name, tenant_key: mention.tenant_key };
+			}),
+		},
+	};
+}
+
+async function catchUpFeishuMessages(
+	conversation: ResolvedConversation,
+	account: FeishuAccountConfig,
+	handlers: LiveConnectionHandlers,
+	resumeCursorMs: string,
+): Promise<void> {
+	const credentials = credentialsOf(account);
+	const startMs = Number.parseInt(resumeCursorMs, 10);
+	if (!Number.isFinite(startMs) || startMs <= 0) return;
+	// The REST endpoint uses second precision and start_time is inclusive, so
+	// step back one second and filter the boundary by create_time in ms to
+	// avoid re-delivering the last-seen event.
+	const startSec = Math.floor(startMs / 1000);
+	let pageToken: string | undefined;
+	try {
+		for (;;) {
+			const data = await callFeishu<{
+				items?: FeishuHistoryMessageItem[];
+				page_token?: string;
+				has_more?: boolean;
+			}>(credentials, "GET", "/open-apis/im/v1/messages", {
+				query: {
+					container_id_type: "chat",
+					container_id: conversation.channel.id,
+					start_time: startSec,
+					sort_type: "ByCreateTimeAsc",
+					page_size: 50,
+					page_token: pageToken,
+				},
+			});
+			const items = data.items ?? [];
+			for (const item of items) {
+				if (item.deleted) continue;
+				const createdMs = Number.parseInt(item.create_time, 10);
+				if (Number.isFinite(createdMs) && createdMs <= startMs) continue;
+				if (account.botOpenId && item.sender?.id_type === "open_id" && item.sender.id === account.botOpenId) continue;
+				const event = historyMessageToEvent(item);
+				if (!event) continue;
+				const input = await eventToInput(conversation, account, event).catch(() => undefined);
+				if (!input) continue;
+				await handlers.onMessage(input, { messageId: input.messageId, cursor: item.create_time });
+			}
+			if (!data.has_more || !data.page_token) break;
+			pageToken = data.page_token;
+		}
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		// Scope denial or an invalid chat id should not block the live connection
+		// from coming up; surface as a non-fatal warning instead.
+		await handlers.onError(new Error(`Feishu catch-up skipped: ${message}`));
+	}
+}
+
 export async function connectFeishuLive(
 	conversation: ResolvedConversation,
 	handlers: LiveConnectionHandlers,
-	_resumeState?: ResumeState,
+	resumeState?: ResumeState,
 ): Promise<LiveConnection> {
 	const account = conversation.account as FeishuAccountConfig;
 	const credentials = credentialsOf(account);
 	// Prewarm the token cache so the first outbound send does not race against
 	// an incoming event that also needs the token.
 	await getTenantAccessToken(credentials);
+
+	// Best-effort replay of messages delivered while the bot was offline. Done
+	// before the WS handshake so catch-up records are strictly ordered before
+	// any new live events.
+	if (resumeState?.cursor) {
+		await catchUpFeishuMessages(conversation, account, handlers, resumeState.cursor);
+	}
 
 	const wsClient = new lark.WSClient({
 		appId: account.appId,
@@ -315,9 +440,15 @@ export async function connectFeishuLive(
 	const dispatcher = new lark.EventDispatcher({}).register({
 		"im.message.receive_v1": async (data) => {
 			try {
-				const input = await eventToInput(conversation, account, data as FeishuReceiveEvent);
+				const event = data as FeishuReceiveEvent;
+				const input = await eventToInput(conversation, account, event);
 				if (!input) return "";
-				await handlers.onMessage(input, { messageId: input.messageId, cursor: input.messageId });
+				// Use create_time (ms) as the cursor so catch-up on next connect can
+				// resume via the REST messages endpoint (which filters by start_time).
+				await handlers.onMessage(input, {
+					messageId: input.messageId,
+					cursor: event.message.create_time,
+				});
 			} catch (error) {
 				await handlers.onError(error instanceof Error ? error : new Error(String(error)));
 			}
