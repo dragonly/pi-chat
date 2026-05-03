@@ -2,17 +2,20 @@ import type {
 	ChatAccountConfig,
 	ChatService,
 	DiscordAccountConfig,
+	FeishuAccountConfig,
 	TelegramAccountConfig,
 } from "../core/config-types.js";
 import type { DiscoverySnapshot } from "../core/discovery-types.js";
 import { removeDiscoverySnapshot, saveDiscoverySnapshot } from "../discovery-store.js";
 import { discordDiscoveryProvider } from "./discord.js";
+import { feishuDiscoveryProvider } from "./feishu.js";
 import { telegramDiscoveryProvider } from "./telegram.js";
 import type { AccountDraft, DiscoveryProvider } from "./types.js";
 
 const providers: Record<ChatService, DiscoveryProvider> = {
 	telegram: telegramDiscoveryProvider,
 	discord: discordDiscoveryProvider,
+	feishu: feishuDiscoveryProvider,
 };
 
 export async function validateAccountDraft(draft: AccountDraft) {
@@ -38,6 +41,15 @@ export function updateAccountIdentityFromSnapshot(
 			...account,
 			botUserId: snapshot.identity.id,
 			botUsername: snapshot.identity.userName,
+		};
+		if (!next.name) next.name = snapshot.identity.name;
+		return next;
+	}
+	if (account.service === "feishu") {
+		const next: FeishuAccountConfig = {
+			...account,
+			botOpenId: snapshot.identity.id,
+			botAppName: snapshot.identity.name,
 		};
 		if (!next.name) next.name = snapshot.identity.name;
 		return next;
