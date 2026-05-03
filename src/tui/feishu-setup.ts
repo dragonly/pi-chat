@@ -24,8 +24,9 @@ export async function createFeishuAccountWithGuidedSetup(
 	const validation = await runWithLoader(ctx, "Validating Feishu credentials...", () =>
 		validateAccountDraft({
 			service: "feishu",
-			botToken: "",
-			feishu: { appId, appSecret, domain: domainChoice },
+			appId,
+			appSecret,
+			domain: domainChoice,
 		}),
 	);
 	if (validation.error) {

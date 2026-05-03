@@ -60,6 +60,16 @@ export interface FeishuResponse<T> {
 	data?: T;
 }
 
+export class FeishuApiError extends Error {
+	constructor(
+		public readonly code: number,
+		message: string,
+	) {
+		super(message);
+		this.name = "FeishuApiError";
+	}
+}
+
 export async function callFeishu<T>(
 	credentials: FeishuCredentials,
 	method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH",
@@ -94,7 +104,7 @@ export async function callFeishu<T>(
 	}
 	const data = (await response.json()) as FeishuResponse<T>;
 	if (!response.ok || data.code !== 0) {
-		throw new Error(data.msg || `Feishu API ${method} ${path} failed (code ${data.code})`);
+		throw new FeishuApiError(data.code, data.msg || `Feishu API ${method} ${path} failed (code ${data.code})`);
 	}
 	if (data.data === undefined) return undefined as unknown as T;
 	return data.data;
@@ -123,7 +133,7 @@ export async function callFeishuForm<T>(
 	}
 	const data = (await response.json()) as FeishuResponse<T>;
 	if (!response.ok || data.code !== 0) {
-		throw new Error(data.msg || `Feishu API POST ${path} failed (code ${data.code})`);
+		throw new FeishuApiError(data.code, data.msg || `Feishu API POST ${path} failed (code ${data.code})`);
 	}
 	if (data.data === undefined) return undefined as unknown as T;
 	return data.data;

@@ -5,8 +5,7 @@ import type { AccountDraft, DiscoveryProvider } from "./types.js";
 
 function credentialsFromDraft(draft: AccountDraft): { appId: string; appSecret: string; domain: "feishu" | "lark" } {
 	if (draft.service !== "feishu") throw new Error("Expected feishu draft");
-	if (!draft.feishu) throw new Error("Feishu credentials missing on draft");
-	return { appId: draft.feishu.appId, appSecret: draft.feishu.appSecret, domain: draft.feishu.domain };
+	return { appId: draft.appId, appSecret: draft.appSecret, domain: draft.domain };
 }
 
 function credentialsFromAccount(account: FeishuAccountConfig): {
