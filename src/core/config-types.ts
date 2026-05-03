@@ -1,4 +1,6 @@
-export type ChatService = "telegram" | "discord";
+export type ChatService = "telegram" | "discord" | "feishu";
+
+export type FeishuDomain = "feishu" | "lark";
 
 export type TriggerMode = "mention" | "message";
 
@@ -51,7 +53,16 @@ export interface DiscordAccountConfig extends BaseAccountConfig {
 	botUsername?: string;
 }
 
-export type ChatAccountConfig = TelegramAccountConfig | DiscordAccountConfig;
+export interface FeishuAccountConfig extends BaseAccountConfig {
+	service: "feishu";
+	appId: string;
+	appSecret: string;
+	domain: FeishuDomain;
+	botOpenId?: string;
+	botAppName?: string;
+}
+
+export type ChatAccountConfig = TelegramAccountConfig | DiscordAccountConfig | FeishuAccountConfig;
 
 export interface ChatConfig {
 	botName?: string;
