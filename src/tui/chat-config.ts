@@ -12,6 +12,7 @@ import type {
 	ChatAccountConfig,
 	ChatConfig,
 	DiscordAccountConfig,
+	FeishuAccountConfig,
 	GondolinConfig,
 	GondolinSecretConfig,
 	TelegramAccountConfig,
@@ -22,12 +23,14 @@ import { loadDiscoverySnapshot } from "../discovery-store.js";
 import { refreshAccountSnapshot, updateAccountIdentityFromSnapshot } from "../services/index.js";
 import { selectItem, showNotice, toggleItems } from "./dialogs.js";
 import { createDiscordAccountWithGuidedSetup } from "./discord-setup.js";
+import { createFeishuAccountWithGuidedSetup } from "./feishu-setup.js";
 import { addTelegramObservedTargetToAccount, createTelegramAccountWithGuidedSetup } from "./telegram-setup.js";
 
 function accountDescription(account: ChatAccountConfig, snapshot: DiscoverySnapshot | undefined): string {
 	const parts: string[] = [account.service];
 	if (account.name) parts.push(account.name);
 	if (account.service === "discord") parts.push(account.serverName);
+	else if (account.service === "feishu") parts.push(account.domain === "lark" ? "lark" : "feishu");
 	else if (snapshot?.identity.userName) parts.push(`@${snapshot.identity.userName}`);
 	parts.push(
 		`${Object.keys(account.channels).length} configured channel${Object.keys(account.channels).length === 1 ? "" : "s"}`,
@@ -364,6 +367,90 @@ async function configureDiscordAccount(ctx: ExtensionContext, accountId: string)
 	}
 }
 
+async function configureFeishuAccount(ctx: ExtensionContext, accountId: string): Promise<void> {
+	while (true) {
+		const config = await loadChatConfig();
+		const account = config.accounts[accountId] as FeishuAccountConfig | undefined;
+		if (!account || account.service !== "feishu") return;
+		const snapshot = await loadDiscoverySnapshot(accountId);
+		const configuredIds = new Set(Object.values(account.channels).map((channel) => channel.id));
+		const channelChoices = (snapshot?.channels ?? [])
+			.map((channel) => ({
+				value: channel.id,
+				label: `${configuredIds.has(channel.id) ? "●" : "○"} ${channel.name}`,
+				description: configuredIds.has(channel.id) ? "configured" : undefined,
+			}))
+			.sort((a, b) => {
+				const aConfigured = a.label.startsWith("●") ? 0 : 1;
+				const bConfigured = b.label.startsWith("●") ? 0 : 1;
+				return aConfigured - bConfigured || a.label.localeCompare(b.label);
+			});
+		const choice = await selectItem(ctx, `${accountId} (${account.botAppName ?? account.appId})`, [
+			{ value: "secrets", label: "Secrets", description: secretSummary(account.gondolin) },
+			{ value: "delete", label: "Delete account", description: "Remove account and all configured channels" },
+			{
+				value: "refresh",
+				label: "Refresh chats",
+				description: snapshot?.fetchedAt ? `Last fetched ${snapshot.fetchedAt}` : "No snapshot yet",
+			},
+			...channelChoices,
+			{
+				value: "__configured__",
+				label: "Manage configured chats",
+				description: `${Object.keys(account.channels).length}`,
+			},
+			{ value: "back", label: "Back" },
+		]);
+		if (!choice || choice === "back") return;
+		if (choice === "secrets") {
+			await configureSecrets(ctx, `${accountId} secrets`, account.gondolin, async (next) => {
+				account.gondolin = next;
+				config.accounts[accountId] = account;
+				await saveChatConfig(config);
+			});
+			continue;
+		}
+		if (choice === "delete") {
+			const ok = await ctx.ui.confirm("Delete account", `Delete ${accountId} and all configured channels?`);
+			if (!ok) continue;
+			delete config.accounts[accountId];
+			await saveChatConfig(config);
+			await removeAccountStorage(accountId, ctx.cwd);
+			await showNotice(ctx, "Account deleted", `Deleted ${accountId}`, "info");
+			return;
+		}
+		if (choice === "refresh") {
+			const fresh = await refreshAccountSnapshot(accountId, account);
+			config.accounts[accountId] = updateAccountIdentityFromSnapshot(account, fresh);
+			await saveChatConfig(config);
+			if ((fresh.warnings?.length ?? 0) > 0) {
+				await showNotice(ctx, "Refresh warnings", (fresh.warnings ?? []).join("\n"), "warning");
+			}
+			continue;
+		}
+		if (choice === "__configured__") {
+			const configuredKeys = Object.keys(account.channels);
+			if (configuredKeys.length === 0) {
+				await showNotice(ctx, "No configured chats", "Select a chat from the list above to configure it.", "info");
+				continue;
+			}
+			const picked = await selectItem(
+				ctx,
+				`${accountId} configured chats`,
+				configuredKeys.map((key) => ({
+					value: key,
+					label: key,
+					description: account.channels[key]?.name ?? account.channels[key]?.id,
+				})),
+			);
+			if (picked) await configureConfiguredChannel(ctx, config, accountId, picked);
+			continue;
+		}
+		const selectedChannel = snapshot?.channels.find((channel) => channel.id === choice);
+		if (selectedChannel) await configureDiscoveredChannel(ctx, config, accountId, selectedChannel, snapshot);
+	}
+}
+
 async function configureTelegramAccount(ctx: ExtensionContext, accountId: string): Promise<void> {
 	while (true) {
 		const config = await loadChatConfig();
@@ -425,6 +512,7 @@ async function configureAccount(ctx: ExtensionContext, accountId: string): Promi
 	if (!account) return;
 	if (account.service === "discord") return configureDiscordAccount(ctx, accountId);
 	if (account.service === "telegram") return configureTelegramAccount(ctx, accountId);
+	if (account.service === "feishu") return configureFeishuAccount(ctx, accountId);
 }
 
 export async function runChatConfigUI(ctx: ExtensionContext): Promise<void> {
@@ -460,10 +548,16 @@ export async function runChatConfigUI(ctx: ExtensionContext): Promise<void> {
 			const serviceChoice = await selectItem(ctx, "Create account", [
 				{ value: "telegram", label: "Telegram" },
 				{ value: "discord", label: "Discord" },
+				{ value: "feishu", label: "Feishu / Lark" },
 			]);
 			if (!serviceChoice) continue;
 			if (serviceChoice === "telegram") {
 				const accountId = await createTelegramAccountWithGuidedSetup(ctx, config);
+				if (accountId) await configureAccount(ctx, accountId);
+				continue;
+			}
+			if (serviceChoice === "feishu") {
+				const accountId = await createFeishuAccountWithGuidedSetup(ctx, config);
 				if (accountId) await configureAccount(ctx, accountId);
 				continue;
 			}
